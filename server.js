@@ -1,489 +1,367 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>CoinFlip Arena</title>
-  <style>
-    * { box-sizing: border-box; font-family: system-ui, -apple-system, sans-serif; }
-    body { margin: 0; background: #0f172a; color: #f8fafc; min-height: 100vh; }
-    header {
-      display: flex; justify-content: space-between; align-items: center;
-      padding: 14px 22px; background: #1e293b; border-bottom: 1px solid #334155; flex-wrap: wrap; gap: 10px;
+const express = require('express');
+const fs = require('fs');
+const path = require('path');
+const crypto = require('crypto');
+
+const app = express();
+const PORT = process.env.PORT || 10000;
+const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, 'data');
+
+fs.mkdirSync(DATA_DIR, { recursive: true });
+const DATA_FILE = path.join(DATA_DIR, 'data.json');
+
+app.use(express.json());
+app.use(express.static(path.join(__dirname, 'public')));
+
+const AFK_INTERVAL_MS = 60 * 1000;
+const AFK_REWARD_COINS = 10;
+
+let db = {
+  maintenance: false,
+  maintenanceMessage: 'Under maintenance. Back soon.',
+  announcement: '',
+  discordInvite: 'https://discord.gg/your-invite',
+  discordWebhook: '',
+  items: [
+    {
+      id: 'vip_role',
+      name: 'VIP Discord Role',
+      price: 2500,
+      description: 'Claim a VIP role in our Discord server using your purchase code!',
+      stock: -1
     }
-    .brand { font-size: 1.2rem; font-weight: 800; color: #fbbf24; }
-    .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
-    .wrap { max-width: 880px; margin: 28px auto; padding: 0 16px; }
-    .card {
-      background: #1e293b; border: 1px solid #334155; border-radius: 12px;
-      padding: 20px; margin-bottom: 18px;
-    }
-    input, textarea {
-      width: 100%; padding: 10px 12px; margin: 8px 0 12px;
-      border-radius: 8px; border: 1px solid #475569; background: #0f172a; color: #fff;
-    }
-    button {
-      padding: 10px 15px; border: 0; border-radius: 8px; font-weight: 600;
-      cursor: pointer; background: #f59e0b; color: #0f172a;
-    }
-    button:disabled { opacity: 0.5; cursor: not-allowed; }
-    .alt { background: #334155; color: #f8fafc; }
-    .danger { background: #ef4444; color: #fff; }
-    .dc {
-      background: #5865F2; color: #fff; text-decoration: none;
-      padding: 10px 15px; border-radius: 8px; font-weight: 600; display: inline-block;
-    }
-    .badge { background: #334155; color: #fde047; padding: 6px 12px; border-radius: 99px; font-weight: 700; }
-    .hidden { display: none !important; }
-    .err { color: #f87171; }
-    .ok { color: #4ade80; }
-    .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 14px; }
-    .item-card {
-      background: #0f172a; border: 1px solid #334155; border-radius: 10px;
-      padding: 14px; display: flex; flex-direction: column; justify-content: space-between;
-    }
-    .price-tag { color: #fbbf24; font-weight: 700; margin: 6px 0; }
-    table { width: 100%; border-collapse: collapse; margin-top: 10px; }
-    th, td { text-align: left; padding: 9px; border-bottom: 1px solid #334155; }
-  </style>
-</head>
-<body>
-  <header>
-    <div class="brand">CoinFlip Arena</div>
-    <div class="row">
-      <a id="dcLink" class="dc" href="#" target="_blank" rel="noopener">Discord</a>
-      <span id="coinBadge" class="badge hidden">0 coins</span>
-      <button id="gameTabBtn" class="hidden" onclick="switchTab('game')">Flip</button>
-      <button id="shopTabBtn" class="alt hidden" onclick="switchTab('shop')">Shop</button>
-      <button id="adminTabBtn" class="alt hidden" onclick="switchTab('admin')">Admin</button>
-      <button id="logoutBtn" class="alt hidden" onclick="logout()">Logout</button>
-    </div>
-  </header>
+  ],
+  users: {}
+};
 
-  <div class="wrap">
-    <!-- Maintenance Screen -->
-    <div id="maintCard" class="card hidden">
-      <h2>Maintenance Mode</h2>
-      <p id="maintMsg"></p>
-      <button class="alt" onclick="showAuth()">Admin Login</button>
-    </div>
+if (fs.existsSync(DATA_FILE)) {
+  try {
+    const loaded = JSON.parse(fs.readFileSync(DATA_FILE, 'utf8'));
+    db = { ...db, ...loaded };
+    if (!Array.isArray(db.items)) db.items = [];
+    if (typeof db.announcement !== 'string') db.announcement = '';
+  } catch (err) {
+    console.error('Could not parse data.json, using default state:', err.message);
+  }
+}
 
-    <!-- Login / Register -->
-    <div id="authCard" class="card hidden" style="max-width: 420px; margin: 24px auto;">
-      <h2 id="authTitle">Login</h2>
-      <input id="userInput" type="text" placeholder="Username" autocomplete="username" />
-      <input id="passInput" type="password" placeholder="Password" autocomplete="current-password" />
-      <div class="row">
-        <button id="authSubmit" onclick="submitAuth()">Login</button>
-        <button id="authSwitch" class="alt" onclick="switchAuth()">Register (1,000 coins)</button>
-      </div>
-      <p id="authErr" class="err"></p>
-    </div>
+function saveDB() {
+  fs.writeFileSync(DATA_FILE, JSON.stringify(db, null, 2));
+}
 
-    <!-- CoinFlip & Support -->
-    <div id="gameSection" class="hidden">
-      <div class="card">
-        <h2>Coin Flip</h2>
-        <div class="row" style="margin-bottom: 10px;">
-          <button id="headsBtn" onclick="pickSide('heads')">Heads (2x)</button>
-          <button id="tailsBtn" class="alt" onclick="pickSide('tails')">Tails (2x)</button>
-        </div>
-        <input id="betInput" type="number" min="1" value="100" placeholder="Bet coins" />
-        <button id="flipBtn" onclick="doFlip()">Flip Coin</button>
-        <p id="flipResult" style="font-weight: 700; min-height: 24px;"></p>
-      </div>
+function hashPassword(pw) {
+  return crypto.createHash('sha256').update(pw).digest('hex');
+}
 
-      <div class="card">
-        <h3>Discord Support</h3>
-        <textarea id="supportInput" rows="2" placeholder="Describe your issue or claim a purchased item..."></textarea>
-        <button class="dc" onclick="sendSupport()">Send to Discord</button>
-        <span id="supportStatus" class="ok" style="margin-left: 10px;"></span>
-      </div>
-    </div>
+function generateItemCode() {
+  const part = crypto.randomBytes(4).toString('hex').toUpperCase();
+  return `CF-${part}`;
+}
 
-    <!-- Shop & Inventory -->
-    <div id="shopSection" class="hidden">
-      <div class="card">
-        <h2>Coin Shop</h2>
-        <p id="shopMsg" style="font-weight: 600;"></p>
-        <div id="shopGrid" class="grid"></div>
-      </div>
+async function notifyDiscord(title, description, color = 5814783) {
+  if (!db.discordWebhook) return;
+  try {
+    await fetch(db.discordWebhook, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        embeds: [{ title, description, color, timestamp: new Date().toISOString() }]
+      })
+    });
+  } catch (err) {
+    console.error('Discord webhook failed:', err.message);
+  }
+}
 
-      <div class="card">
-        <h3>My Purchased Items</h3>
-        <div id="inventoryList" style="color: #cbd5e1;">No items bought yet.</div>
-      </div>
-    </div>
+function auth(req, res, next) {
+  const token = req.headers['authorization'];
+  const found = Object.entries(db.users).find(([, u]) => u.token === token);
+  if (!found) return res.status(401).json({ error: 'Unauthorized' });
+  req.username = found[0];
+  req.user = found[1];
+  if (!Array.isArray(req.user.inventory)) req.user.inventory = [];
+  if (!req.user.lastAfkClaim) req.user.lastAfkClaim = Date.now();
+  next();
+}
 
-    <!-- Admin Panel -->
-    <div id="adminSection" class="hidden">
-      <div class="card">
-        <h2>Admin Settings</h2>
-        <label style="display: flex; align-items: center; gap: 8px; margin-bottom: 10px;">
-          <input id="maintCheck" type="checkbox" style="width: auto; margin: 0;" />
-          <span>Maintenance Mode</span>
-        </label>
-        <input id="maintMsgInput" type="text" placeholder="Maintenance message" />
-        <input id="dcInviteInput" type="text" placeholder="Discord invite link (https://discord.gg/...)" />
-        <input id="dcWebhookInput" type="text" placeholder="Discord webhook URL" />
-        <button onclick="saveSettings()">Save Settings</button>
-        <span id="saveStatus" class="ok" style="margin-left: 10px;"></span>
-      </div>
+function adminOnly(req, res, next) {
+  if (!req.user.isAdmin) return res.status(403).json({ error: 'Admin only' });
+  next();
+}
 
-      <div class="card">
-        <h2>Add Shop Item</h2>
-        <input id="itemNameInput" type="text" placeholder="Item Name (e.g., VIP Rank, Custom Tag)" />
-        <input id="itemPriceInput" type="number" min="1" placeholder="Price in Coins (e.g., 500)" />
-        <input id="itemDescInput" type="text" placeholder="Item Description" />
-        <input id="itemStockInput" type="number" min="-1" placeholder="Stock (leave empty for unlimited)" />
-        <button onclick="addShopItem()">Add Item to Shop</button>
-        <span id="itemStatus" class="ok" style="margin-left: 10px;"></span>
+app.get('/health', (req, res) => res.status(200).send('OK'));
 
-        <h3 style="margin-top: 20px;">Current Shop Items</h3>
-        <table>
-          <thead>
-            <tr><th>Item</th><th>Price</th><th>Stock</th><th>Action</th></tr>
-          </thead>
-          <tbody id="adminItemsTable"></tbody>
-        </table>
-      </div>
+app.get('/api/status', (req, res) => {
+  res.json({
+    maintenance: db.maintenance,
+    maintenanceMessage: db.maintenanceMessage,
+    announcement: db.announcement,
+    discordInvite: db.discordInvite
+  });
+});
 
-      <div class="card">
-        <h3>Players</h3>
-        <table>
-          <thead>
-            <tr><th>Username</th><th>Coins</th><th>Items</th><th>Role</th><th>Actions</th></tr>
-          </thead>
-          <tbody id="usersTable"></tbody>
-        </table>
-      </div>
-    </div>
-  </div>
+app.post('/api/register', async (req, res) => {
+  const { username, password } = req.body;
+  const cleanUser = (username || '').trim().toLowerCase();
+  if (cleanUser.length < 3 || !password || password.length < 4) {
+    return res.status(400).json({ error: 'Username (3+ chars) and password (4+ chars) required.' });
+  }
+  if (db.users[cleanUser]) {
+    return res.status(400).json({ error: 'Username already taken.' });
+  }
 
-  <script>
-    let token = localStorage.getItem('cf_token');
-    let isRegister = false;
-    let chosenSide = 'heads';
-    let isAdminUser = false;
+  const isFirstUser = Object.keys(db.users).length === 0;
+  const token = crypto.randomBytes(24).toString('hex');
 
-    async function init() {
-      try {
-        const statusRes = await fetch('/api/status');
-        const status = await statusRes.json();
-        document.getElementById('dcLink').href = status.discordInvite || '#';
+  db.users[cleanUser] = {
+    passwordHash: hashPassword(password),
+    coins: 1000,
+    isAdmin: isFirstUser,
+    inventory: [],
+    lastAfkClaim: Date.now(),
+    token
+  };
+  saveDB();
 
-        if (token) {
-          const meRes = await fetch('/api/me', { headers: { Authorization: token } });
-          if (meRes.ok) {
-            enterApp(await meRes.json());
-            return;
-          }
-          if (meRes.status === 503) {
-            showMaintenance(status.maintenanceMessage);
-            return;
-          }
-          localStorage.removeItem('cf_token');
-          token = null;
-        }
+  await notifyDiscord('New Player Registered', `**${cleanUser}** joined with 1,000 coins.`, 3066993);
+  res.json({
+    token,
+    username: cleanUser,
+    coins: 1000,
+    isAdmin: isFirstUser,
+    inventory: []
+  });
+});
 
-        if (status.maintenance) showMaintenance(status.maintenanceMessage);
-        else showAuth();
-      } catch (e) {
-        showAuth();
-      }
-    }
+app.post('/api/login', (req, res) => {
+  const cleanUser = (req.body.username || '').trim().toLowerCase();
+  const user = db.users[cleanUser];
+  if (!user || user.passwordHash !== hashPassword(req.body.password || '')) {
+    return res.status(401).json({ error: 'Invalid credentials.' });
+  }
+  if (db.maintenance && !user.isAdmin) {
+    return res.status(503).json({ error: db.maintenanceMessage, maintenance: true });
+  }
+  if (!Array.isArray(user.inventory)) user.inventory = [];
+  user.lastAfkClaim = Date.now();
 
-    function showMaintenance(msg) {
-      document.getElementById('maintMsg').textContent = msg || 'Under maintenance.';
-      document.getElementById('maintCard').classList.remove('hidden');
-      document.getElementById('authCard').classList.add('hidden');
-      document.getElementById('gameSection').classList.add('hidden');
-      document.getElementById('shopSection').classList.add('hidden');
-      document.getElementById('adminSection').classList.add('hidden');
-    }
+  user.token = crypto.randomBytes(24).toString('hex');
+  saveDB();
+  res.json({
+    token: user.token,
+    username: cleanUser,
+    coins: user.coins,
+    isAdmin: user.isAdmin,
+    inventory: user.inventory
+  });
+});
 
-    function showAuth() {
-      document.getElementById('maintCard').classList.add('hidden');
-      document.getElementById('authCard').classList.remove('hidden');
-    }
+app.get('/api/me', auth, (req, res) => {
+  if (db.maintenance && !req.user.isAdmin) {
+    return res.status(503).json({ error: db.maintenanceMessage, maintenance: true });
+  }
+  res.json({
+    username: req.username,
+    coins: req.user.coins,
+    isAdmin: req.user.isAdmin,
+    inventory: req.user.inventory
+  });
+});
 
-    function switchAuth() {
-      isRegister = !isRegister;
-      document.getElementById('authTitle').textContent = isRegister ? 'Register' : 'Login';
-      document.getElementById('authSubmit').textContent = isRegister ? 'Create Account' : 'Login';
-      document.getElementById('authSwitch').textContent = isRegister ? 'Back to Login' : 'Register (1,000 coins)';
-      document.getElementById('authErr').textContent = '';
-    }
+// --- AFK REWARD ROUTE (1 min = 10 coins) ---
+app.post('/api/afk/claim', auth, (req, res) => {
+  if (db.maintenance && !req.user.isAdmin) {
+    return res.status(503).json({ error: db.maintenanceMessage, maintenance: true });
+  }
 
-    async function submitAuth() {
-      const username = document.getElementById('userInput').value;
-      const password = document.getElementById('passInput').value;
-      const res = await fetch(isRegister ? '/api/register' : '/api/login', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ username, password })
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        document.getElementById('authErr').textContent = data.error || 'Authentication failed.';
-        return;
-      }
-      token = data.token;
-      localStorage.setItem('cf_token', token);
-      enterApp(data);
-    }
+  const now = Date.now();
+  const elapsed = now - (req.user.lastAfkClaim || now);
+  const minutes = Math.floor(elapsed / AFK_INTERVAL_MS);
 
-    function enterApp(user) {
-      isAdminUser = Boolean(user.isAdmin);
-      document.getElementById('maintCard').classList.add('hidden');
-      document.getElementById('authCard').classList.add('hidden');
-      document.getElementById('coinBadge').classList.remove('hidden');
-      document.getElementById('gameTabBtn').classList.remove('hidden');
-      document.getElementById('shopTabBtn').classList.remove('hidden');
-      document.getElementById('logoutBtn').classList.remove('hidden');
-      if (isAdminUser) document.getElementById('adminTabBtn').classList.remove('hidden');
+  if (minutes < 1) {
+    const remainingSec = Math.ceil((AFK_INTERVAL_MS - elapsed) / 1000);
+    return res.status(429).json({
+      error: `Wait ${remainingSec}s more to claim AFK coins.`,
+      remainingSec
+    });
+  }
 
-      setCoins(user.coins);
-      renderInventory(user.inventory || []);
-      switchTab('game');
-    }
+  // Cap single claim to 10 minutes at once to prevent abuse
+  const creditedMinutes = Math.min(minutes, 10);
+  const earned = creditedMinutes * AFK_REWARD_COINS;
 
-    function switchTab(tab) {
-      document.getElementById('gameSection').classList.toggle('hidden', tab !== 'game');
-      document.getElementById('shopSection').classList.toggle('hidden', tab !== 'shop');
-      document.getElementById('adminSection').classList.toggle('hidden', tab !== 'admin');
+  req.user.coins += earned;
+  req.user.lastAfkClaim = now - (elapsed % AFK_INTERVAL_MS);
+  saveDB();
 
-      document.getElementById('gameTabBtn').className = tab === 'game' ? '' : 'alt';
-      document.getElementById('shopTabBtn').className = tab === 'shop' ? '' : 'alt';
-      if (isAdminUser) {
-        document.getElementById('adminTabBtn').className = tab === 'admin' ? '' : 'alt';
-      }
+  res.json({
+    earned,
+    minutes: creditedMinutes,
+    coins: req.user.coins
+  });
+});
 
-      if (tab === 'shop') loadShop();
-      if (tab === 'admin') loadAdmin();
-    }
+app.post('/api/flip', auth, async (req, res) => {
+  if (db.maintenance && !req.user.isAdmin) {
+    return res.status(503).json({ error: db.maintenanceMessage, maintenance: true });
+  }
 
-    function setCoins(amount) {
-      document.getElementById('coinBadge').textContent = `${Number(amount).toLocaleString()} coins`;
-    }
+  const bet = Math.floor(Number(req.body.bet));
+  const choice = req.body.choice;
+  if (!['heads', 'tails'].includes(choice)) {
+    return res.status(400).json({ error: 'Choice must be heads or tails.' });
+  }
+  if (!bet || bet < 1 || bet > req.user.coins) {
+    return res.status(400).json({ error: 'Invalid bet amount.' });
+  }
 
-    function pickSide(side) {
-      chosenSide = side;
-      document.getElementById('headsBtn').className = side === 'heads' ? '' : 'alt';
-      document.getElementById('tailsBtn').className = side === 'tails' ? '' : 'alt';
-    }
+  const outcome = Math.random() < 0.5 ? 'heads' : 'tails';
+  const won = outcome === choice;
+  req.user.coins += won ? bet : -bet;
+  saveDB();
 
-    async function doFlip() {
-      const bet = Number(document.getElementById('betInput').value);
-      const flipBtn = document.getElementById('flipBtn');
-      flipBtn.disabled = true;
-      try {
-        const res = await fetch('/api/flip', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', Authorization: token },
-          body: JSON.stringify({ bet, choice: chosenSide })
-        });
-        const data = await res.json();
-        if (!res.ok) {
-          document.getElementById('flipResult').textContent = data.error || 'Flip failed.';
-          document.getElementById('flipResult').className = 'err';
-          return;
-        }
-        setCoins(data.coins);
-        document.getElementById('flipResult').textContent = data.won
-          ? `Landed on ${data.outcome.toUpperCase()} — You won ${bet} coins!`
-          : `Landed on ${data.outcome.toUpperCase()} — You lost ${bet} coins.`;
-        document.getElementById('flipResult').className = data.won ? 'ok' : 'err';
-      } finally {
-        flipBtn.disabled = false;
-      }
-    }
+  if (won && bet >= 500) {
+    await notifyDiscord('Big Flip Win', `**${req.username}** won **${bet}** coins on ${choice}.`, 15844367);
+  }
 
-    // --- SHOP FUNCTIONS ---
-    async function loadShop() {
-      const res = await fetch('/api/shop', { headers: { Authorization: token } });
-      if (!res.ok) return;
-      const data = await res.json();
-      renderShopItems(data.items || []);
-      renderInventory(data.inventory || []);
-    }
+  res.json({ outcome, won, coins: req.user.coins });
+});
 
-    function renderShopItems(items) {
-      const grid = document.getElementById('shopGrid');
-      if (!items.length) {
-        grid.innerHTML = '<p style="color:#94a3b8;">No items in the shop right now.</p>';
-        return;
-      }
-      grid.innerHTML = items.map(item => {
-        const outOfStock = item.stock === 0;
-        const stockText = item.stock < 0 ? 'Unlimited' : `${item.stock} left`;
-        return `
-          <div class="item-card">
-            <div>
-              <strong>${item.name}</strong>
-              <div class="price-tag">${Number(item.price).toLocaleString()} coins</div>
-              <p style="font-size:0.9rem;color:#cbd5e1;margin:4px 0 10px;">${item.description}</p>
-            </div>
-            <div>
-              <div style="font-size:0.8rem;color:#94a3b8;margin-bottom:8px;">Stock: ${stockText}</div>
-              <button style="width:100%;" ${outOfStock ? 'disabled' : ''} onclick="buyItem('${item.id}')">
-                ${outOfStock ? 'Out of Stock' : 'Buy Item'}
-              </button>
-            </div>
-          </div>
-        `;
-      }).join('');
-    }
+// --- SHOP ROUTES ---
+app.get('/api/shop', auth, (req, res) => {
+  if (db.maintenance && !req.user.isAdmin) {
+    return res.status(503).json({ error: db.maintenanceMessage, maintenance: true });
+  }
+  res.json({ items: db.items, inventory: req.user.inventory });
+});
 
-    function renderInventory(inv) {
-      const el = document.getElementById('inventoryList');
-      if (!inv.length) {
-        el.innerHTML = '<p style="color:#94a3b8;">No items bought yet.</p>';
-        return;
-      }
-      el.innerHTML = inv.map(i => `
-        <div style="padding:8px 0;border-bottom:1px solid #334155;">
-          <strong>${i.name}</strong> — bought for ${Number(i.price).toLocaleString()} coins
-        </div>
-      `).join('');
-    }
+app.post('/api/shop/buy', auth, async (req, res) => {
+  if (db.maintenance && !req.user.isAdmin) {
+    return res.status(503).json({ error: db.maintenanceMessage, maintenance: true });
+  }
 
-    async function buyItem(itemId) {
-      const msgEl = document.getElementById('shopMsg');
-      const res = await fetch('/api/shop/buy', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: token },
-        body: JSON.stringify({ itemId })
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        msgEl.textContent = data.error || 'Could not buy item.';
-        msgEl.className = 'err';
-        return;
-      }
-      setCoins(data.coins);
-      renderShopItems(data.items);
-      renderInventory(data.inventory);
-      msgEl.textContent = 'Purchase successful!';
-      msgEl.className = 'ok';
-    }
+  const item = db.items.find(i => i.id === req.body.itemId);
+  if (!item) return res.status(404).json({ error: 'Item not found.' });
+  if (item.stock === 0) return res.status(400).json({ error: 'Item is out of stock.' });
+  if (req.user.coins < item.price) {
+    return res.status(400).json({ error: 'Not enough coins.' });
+  }
 
-    async function sendSupport() {
-      const message = document.getElementById('supportInput').value;
-      const res = await fetch('/api/support', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: token },
-        body: JSON.stringify({ message })
-      });
-      const data = await res.json();
-      if (res.ok) {
-        document.getElementById('supportInput').value = '';
-        document.getElementById('supportStatus').textContent = 'Sent to Discord!';
-      } else {
-        document.getElementById('supportStatus').textContent = data.error || 'Failed to send.';
-      }
-    }
+  req.user.coins -= item.price;
+  if (item.stock > 0) item.stock -= 1;
 
-    // --- ADMIN FUNCTIONS ---
-    async function loadAdmin() {
-      const res = await fetch('/api/admin/data', { headers: { Authorization: token } });
-      if (!res.ok) return;
-      const d = await res.json();
-      document.getElementById('maintCheck').checked = Boolean(d.maintenance);
-      document.getElementById('maintMsgInput').value = d.maintenanceMessage || '';
-      document.getElementById('dcInviteInput').value = d.discordInvite || '';
-      document.getElementById('dcWebhookInput').value = d.discordWebhook || '';
+  const code = generateItemCode();
+  const purchase = {
+    id: item.id,
+    name: item.name,
+    price: item.price,
+    code,
+    boughtAt: new Date().toISOString()
+  };
+  req.user.inventory.push(purchase);
 
-      document.getElementById('adminItemsTable').innerHTML = (d.items || []).map(i => `
-        <tr>
-          <td>${i.name}</td>
-          <td>${Number(i.price).toLocaleString()}</td>
-          <td>${i.stock < 0 ? 'Unlimited' : i.stock}</td>
-          <td><button class="danger" onclick="deleteShopItem('${i.id}')">Delete</button></td>
-        </tr>
-      `).join('');
+  saveDB();
 
-      document.getElementById('usersTable').innerHTML = d.users.map(u => `
-        <tr>
-          <td>${u.username}</td>
-          <td><input id="coins_${u.username}" type="number" value="${u.coins}" style="width:100px;margin:0;" /></td>
-          <td>${u.itemCount}</td>
-          <td>${u.isAdmin ? 'Admin' : 'Player'}</td>
-          <td>
-            <button onclick="updateUser('${u.username}', ${u.isAdmin})">Save Coins</button>
-            <button class="alt" onclick="updateUser('${u.username}', ${!u.isAdmin})">
-              ${u.isAdmin ? 'Remove Admin' : 'Make Admin'}
-            </button>
-          </td>
-        </tr>
-      `).join('');
-    }
+  await notifyDiscord(
+    'Shop Purchase & Code',
+    `**${req.username}** bought **${item.name}** for **${item.price}** coins.\n**Claim Code:** \`${code}\``,
+    10181046
+  );
 
-    async function addShopItem() {
-      const name = document.getElementById('itemNameInput').value;
-      const price = document.getElementById('itemPriceInput').value;
-      const description = document.getElementById('itemDescInput').value;
-      const stock = document.getElementById('itemStockInput').value;
+  res.json({
+    code,
+    purchase,
+    coins: req.user.coins,
+    inventory: req.user.inventory,
+    items: db.items
+  });
+});
 
-      const res = await fetch('/api/admin/items', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: token },
-        body: JSON.stringify({ name, price, description, stock })
-      });
-      const data = await res.json();
-      const statusEl = document.getElementById('itemStatus');
-      if (!res.ok) {
-        statusEl.textContent = data.error || 'Error adding item.';
-        statusEl.className = 'err';
-        return;
-      }
-      document.getElementById('itemNameInput').value = '';
-      document.getElementById('itemPriceInput').value = '';
-      document.getElementById('itemDescInput').value = '';
-      document.getElementById('itemStockInput').value = '';
-      statusEl.textContent = 'Item added!';
-      statusEl.className = 'ok';
-      loadAdmin();
-    }
+app.post('/api/support', auth, async (req, res) => {
+  const message = (req.body.message || '').trim();
+  if (message.length < 4) {
+    return res.status(400).json({ error: 'Please write a longer message.' });
+  }
+  await notifyDiscord(
+    `Support Request: ${req.username}`,
+    `${message}\n\nCoins: ${req.user.coins}`,
+    15158332
+  );
+  res.json({ ok: true });
+});
 
-    async function deleteShopItem(id) {
-      await fetch(`/api/admin/items/${id}`, {
-        method: 'DELETE',
-        headers: { Authorization: token }
-      });
-      loadAdmin();
-    }
+// --- ADMIN ROUTES ---
+app.get('/api/admin/data', auth, adminOnly, (req, res) => {
+  const users = Object.entries(db.users).map(([username, u]) => ({
+    username,
+    coins: u.coins,
+    isAdmin: u.isAdmin,
+    itemCount: Array.isArray(u.inventory) ? u.inventory.length : 0
+  }));
+  res.json({
+    maintenance: db.maintenance,
+    maintenanceMessage: db.maintenanceMessage,
+    announcement: db.announcement,
+    discordInvite: db.discordInvite,
+    discordWebhook: db.discordWebhook,
+    items: db.items,
+    users
+  });
+});
 
-    async function saveSettings() {
-      await fetch('/api/admin/settings', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: token },
-        body: JSON.stringify({
-          maintenance: document.getElementById('maintCheck').checked,
-          maintenanceMessage: document.getElementById('maintMsgInput').value,
-          discordInvite: document.getElementById('dcInviteInput').value,
-          discordWebhook: document.getElementById('dcWebhookInput').value
-        })
-      });
-      document.getElementById('saveStatus').textContent = 'Settings saved.';
-    }
+app.post('/api/admin/settings', auth, adminOnly, (req, res) => {
+  if (typeof req.body.maintenance === 'boolean') db.maintenance = req.body.maintenance;
+  if (typeof req.body.maintenanceMessage === 'string') db.maintenanceMessage = req.body.maintenanceMessage;
+  if (typeof req.body.announcement === 'string') db.announcement = req.body.announcement.trim();
+  if (typeof req.body.discordInvite === 'string') db.discordInvite = req.body.discordInvite;
+  if (typeof req.body.discordWebhook === 'string') db.discordWebhook = req.body.discordWebhook;
+  saveDB();
+  res.json({ ok: true, announcement: db.announcement });
+});
 
-    async function updateUser(targetUser, isAdmin) {
-      const coins = Number(document.getElementById(`coins_${targetUser}`).value);
-      await fetch('/api/admin/user', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: token },
-        body: JSON.stringify({ targetUser, coins, isAdmin })
-      });
-      loadAdmin();
-    }
+app.post('/api/admin/items', auth, adminOnly, (req, res) => {
+  const name = (req.body.name || '').trim();
+  const description = (req.body.description || '').trim();
+  const price = Math.floor(Number(req.body.price));
+  const stockRaw = req.body.stock;
+  const stock = stockRaw === '' || stockRaw === undefined || Number(stockRaw) < 0
+    ? -1
+    : Math.floor(Number(stockRaw));
 
-    function logout() {
-      localStorage.removeItem('cf_token');
-      location.reload();
-    }
+  if (!name || Number.isNaN(price) || price < 1) {
+    return res.status(400).json({ error: 'Valid item name and price (1+) required.' });
+  }
 
-    init();
-  </script>
-</body>
-</html>
+  db.items.push({
+    id: crypto.randomBytes(6).toString('hex'),
+    name,
+    price,
+    description: description || 'Shop item',
+    stock
+  });
+  saveDB();
+  res.json({ ok: true, items: db.items });
+});
+
+app.delete('/api/admin/items/:id', auth, adminOnly, (req, res) => {
+  db.items = db.items.filter(i => i.id !== req.params.id);
+  saveDB();
+  res.json({ ok: true, items: db.items });
+});
+
+app.post('/api/admin/user', auth, adminOnly, (req, res) => {
+  const user = db.users[req.body.targetUser];
+  if (!user) return res.status(404).json({ error: 'User not found.' });
+  if (req.body.coins !== undefined && !Number.isNaN(Number(req.body.coins))) {
+    user.coins = Math.max(0, Math.floor(Number(req.body.coins)));
+  }
+  if (typeof req.body.isAdmin === 'boolean') {
+    user.isAdmin = req.body.isAdmin;
+  }
+  saveDB();
+  res.json({ ok: true });
+});
+
+app.listen(PORT, '0.0.0.0', () => {
+  console.log(`Server listening on 0.0.0.0:${PORT}`);
+});
