@@ -11,9 +11,13 @@
       display: flex; justify-content: space-between; align-items: center;
       padding: 14px 22px; background: #1e293b; border-bottom: 1px solid #334155; flex-wrap: wrap; gap: 10px;
     }
+    .announcement-bar {
+      background: #422006; color: #fde68a; border-bottom: 1px solid #b45309;
+      padding: 10px 22px; text-align: center; font-weight: 600; font-size: 0.95rem;
+    }
     .brand { font-size: 1.2rem; font-weight: 800; color: #fbbf24; }
     .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
-    .wrap { max-width: 880px; margin: 28px auto; padding: 0 16px; }
+    .wrap { max-width: 880px; margin: 24px auto; padding: 0 16px; }
     .card {
       background: #1e293b; border: 1px solid #334155; border-radius: 12px;
       padding: 20px; margin-bottom: 18px;
@@ -34,6 +38,11 @@
       padding: 10px 15px; border-radius: 8px; font-weight: 600; display: inline-block;
     }
     .badge { background: #334155; color: #fde047; padding: 6px 12px; border-radius: 99px; font-weight: 700; }
+    .afk-badge { background: #14532d; color: #86efac; padding: 6px 12px; border-radius: 99px; font-weight: 600; font-size: 0.85rem; }
+    .code-box {
+      display: inline-block; background: #0f172a; border: 1px dashed #fbbf24;
+      color: #fde047; padding: 4px 8px; border-radius: 6px; font-family: monospace; font-weight: 700;
+    }
     .hidden { display: none !important; }
     .err { color: #f87171; }
     .ok { color: #4ade80; }
@@ -48,10 +57,13 @@
   </style>
 </head>
 <body>
+  <div id="announcementBar" class="announcement-bar hidden"></div>
+
   <header>
     <div class="brand">CoinFlip Arena</div>
     <div class="row">
       <a id="dcLink" class="dc" href="#" target="_blank" rel="noopener">Discord</a>
+      <span id="afkTimer" class="afk-badge hidden">AFK: 60s (+10)</span>
       <span id="coinBadge" class="badge hidden">0 coins</span>
       <button id="gameTabBtn" class="hidden" onclick="switchTab('game')">Flip</button>
       <button id="shopTabBtn" class="alt hidden" onclick="switchTab('shop')">Shop</button>
@@ -95,7 +107,7 @@
 
       <div class="card">
         <h3>Discord Support</h3>
-        <textarea id="supportInput" rows="2" placeholder="Describe your issue or claim a purchased item..."></textarea>
+        <textarea id="supportInput" rows="2" placeholder="Describe your issue or share your purchase code to claim..."></textarea>
         <button class="dc" onclick="sendSupport()">Send to Discord</button>
         <span id="supportStatus" class="ok" style="margin-left: 10px;"></span>
       </div>
@@ -110,7 +122,7 @@
       </div>
 
       <div class="card">
-        <h3>My Purchased Items</h3>
+        <h3>My Purchased Items & Codes</h3>
         <div id="inventoryList" style="color: #cbd5e1;">No items bought yet.</div>
       </div>
     </div>
@@ -118,12 +130,13 @@
     <!-- Admin Panel -->
     <div id="adminSection" class="hidden">
       <div class="card">
-        <h2>Admin Settings</h2>
+        <h2>Admin Settings & Announcement</h2>
         <label style="display: flex; align-items: center; gap: 8px; margin-bottom: 10px;">
           <input id="maintCheck" type="checkbox" style="width: auto; margin: 0;" />
           <span>Maintenance Mode</span>
         </label>
         <input id="maintMsgInput" type="text" placeholder="Maintenance message" />
+        <input id="announcementInput" type="text" placeholder="Announcement banner text (leave empty to hide)" />
         <input id="dcInviteInput" type="text" placeholder="Discord invite link (https://discord.gg/...)" />
         <input id="dcWebhookInput" type="text" placeholder="Discord webhook URL" />
         <button onclick="saveSettings()">Save Settings</button>
@@ -165,12 +178,26 @@
     let isRegister = false;
     let chosenSide = 'heads';
     let isAdminUser = false;
+    let afkSecondsLeft = 60;
+    let afkLoopStarted = false;
+
+    function setAnnouncement(text) {
+      const bar = document.getElementById('announcementBar');
+      if (text && text.trim()) {
+        bar.textContent = `📢 ${text.trim()}`;
+        bar.classList.remove('hidden');
+      } else {
+        bar.textContent = '';
+        bar.classList.add('hidden');
+      }
+    }
 
     async function init() {
       try {
         const statusRes = await fetch('/api/status');
         const status = await statusRes.json();
         document.getElementById('dcLink').href = status.discordInvite || '#';
+        setAnnouncement(status.announcement);
 
         if (token) {
           const meRes = await fetch('/api/me', { headers: { Authorization: token } });
@@ -237,6 +264,7 @@
       isAdminUser = Boolean(user.isAdmin);
       document.getElementById('maintCard').classList.add('hidden');
       document.getElementById('authCard').classList.add('hidden');
+      document.getElementById('afkTimer').classList.remove('hidden');
       document.getElementById('coinBadge').classList.remove('hidden');
       document.getElementById('gameTabBtn').classList.remove('hidden');
       document.getElementById('shopTabBtn').classList.remove('hidden');
@@ -245,7 +273,35 @@
 
       setCoins(user.coins);
       renderInventory(user.inventory || []);
+      startAfkLoop();
       switchTab('game');
+    }
+
+    function startAfkLoop() {
+      if (afkLoopStarted) return;
+      afkLoopStarted = true;
+      afkSecondsLeft = 60;
+      const badge = document.getElementById('afkTimer');
+      badge.textContent = `AFK: ${afkSecondsLeft}s (+10)`;
+
+      setInterval(async () => {
+        if (!token) return;
+        afkSecondsLeft -= 1;
+        if (afkSecondsLeft <= 0) {
+          afkSecondsLeft = 60;
+          try {
+            const res = await fetch('/api/afk/claim', {
+              method: 'POST',
+              headers: { Authorization: token }
+            });
+            if (res.ok) {
+              const data = await res.json();
+              setCoins(data.coins);
+            }
+          } catch (e) {}
+        }
+        badge.textContent = `AFK: ${afkSecondsLeft}s (+10)`;
+      }, 1000);
     }
 
     function switchTab(tab) {
@@ -299,7 +355,6 @@
       }
     }
 
-    // --- SHOP FUNCTIONS ---
     async function loadShop() {
       const res = await fetch('/api/shop', { headers: { Authorization: token } });
       if (!res.ok) return;
@@ -342,8 +397,12 @@
         return;
       }
       el.innerHTML = inv.map(i => `
-        <div style="padding:8px 0;border-bottom:1px solid #334155;">
-          <strong>${i.name}</strong> — bought for ${Number(i.price).toLocaleString()} coins
+        <div style="padding:10px 0;border-bottom:1px solid #334155;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
+          <div>
+            <strong>${i.name}</strong>
+            <span style="color:#94a3b8;font-size:0.85rem;">(${Number(i.price).toLocaleString()} coins)</span>
+          </div>
+          <span class="code-box">Code: ${i.code || 'N/A'}</span>
         </div>
       `).join('');
     }
@@ -364,7 +423,7 @@
       setCoins(data.coins);
       renderShopItems(data.items);
       renderInventory(data.inventory);
-      msgEl.textContent = 'Purchase successful!';
+      msgEl.innerHTML = `Bought! Your item code is <span class="code-box">${data.code}</span>`;
       msgEl.className = 'ok';
     }
 
@@ -384,15 +443,16 @@
       }
     }
 
-    // --- ADMIN FUNCTIONS ---
     async function loadAdmin() {
       const res = await fetch('/api/admin/data', { headers: { Authorization: token } });
       if (!res.ok) return;
       const d = await res.json();
       document.getElementById('maintCheck').checked = Boolean(d.maintenance);
       document.getElementById('maintMsgInput').value = d.maintenanceMessage || '';
+      document.getElementById('announcementInput').value = d.announcement || '';
       document.getElementById('dcInviteInput').value = d.discordInvite || '';
       document.getElementById('dcWebhookInput').value = d.discordWebhook || '';
+      setAnnouncement(d.announcement);
 
       document.getElementById('adminItemsTable').innerHTML = (d.items || []).map(i => `
         <tr>
@@ -455,16 +515,19 @@
     }
 
     async function saveSettings() {
+      const announcement = document.getElementById('announcementInput').value;
       await fetch('/api/admin/settings', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: token },
         body: JSON.stringify({
           maintenance: document.getElementById('maintCheck').checked,
           maintenanceMessage: document.getElementById('maintMsgInput').value,
+          announcement,
           discordInvite: document.getElementById('dcInviteInput').value,
           discordWebhook: document.getElementById('dcWebhookInput').value
         })
       });
+      setAnnouncement(announcement);
       document.getElementById('saveStatus').textContent = 'Settings saved.';
     }
 
