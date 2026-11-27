@@ -1,0 +1,319 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>CoinFlip Arena</title>
+  <style>
+    * { box-sizing: border-box; font-family: system-ui, -apple-system, sans-serif; }
+    body { margin: 0; background: #0f172a; color: #f8fafc; min-height: 100vh; }
+    header {
+      display: flex; justify-content: space-between; align-items: center;
+      padding: 14px 22px; background: #1e293b; border-bottom: 1px solid #334155;
+    }
+    .brand { font-size: 1.2rem; font-weight: 800; color: #fbbf24; }
+    .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+    .wrap { max-width: 840px; margin: 28px auto; padding: 0 16px; }
+    .card {
+      background: #1e293b; border: 1px solid #334155; border-radius: 12px;
+      padding: 20px; margin-bottom: 18px;
+    }
+    input, textarea {
+      width: 100%; padding: 10px 12px; margin: 8px 0 12px;
+      border-radius: 8px; border: 1px solid #475569; background: #0f172a; color: #fff;
+    }
+    button {
+      padding: 10px 15px; border: 0; border-radius: 8px; font-weight: 600;
+      cursor: pointer; background: #f59e0b; color: #0f172a;
+    }
+    button:disabled { opacity: 0.5; cursor: not-allowed; }
+    .alt { background: #334155; color: #f8fafc; }
+    .dc {
+      background: #5865F2; color: #fff; text-decoration: none;
+      padding: 10px 15px; border-radius: 8px; font-weight: 600; display: inline-block;
+    }
+    .badge { background: #334155; color: #fde047; padding: 6px 12px; border-radius: 99px; font-weight: 700; }
+    .hidden { display: none !important; }
+    .err { color: #f87171; }
+    .ok { color: #4ade80; }
+    table { width: 100%; border-collapse: collapse; margin-top: 10px; }
+    th, td { text-align: left; padding: 9px; border-bottom: 1px solid #334155; }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="brand">CoinFlip Arena</div>
+    <div class="row">
+      <a id="dcLink" class="dc" href="#" target="_blank" rel="noopener">Discord</a>
+      <span id="coinBadge" class="badge hidden">0 coins</span>
+      <button id="adminBtn" class="alt hidden" onclick="toggleAdmin()">Admin Panel</button>
+      <button id="logoutBtn" class="alt hidden" onclick="logout()">Logout</button>
+    </div>
+  </header>
+
+  <div class="wrap">
+    <!-- Maintenance Screen -->
+    <div id="maintCard" class="card hidden">
+      <h2>Maintenance Mode</h2>
+      <p id="maintMsg"></p>
+      <button class="alt" onclick="showAuth()">Admin Login</button>
+    </div>
+
+    <!-- Login / Register -->
+    <div id="authCard" class="card hidden" style="max-width: 420px; margin: 24px auto;">
+      <h2 id="authTitle">Login</h2>
+      <input id="userInput" type="text" placeholder="Username" autocomplete="username" />
+      <input id="passInput" type="password" placeholder="Password" autocomplete="current-password" />
+      <div class="row">
+        <button id="authSubmit" onclick="submitAuth()">Login</button>
+        <button id="authSwitch" class="alt" onclick="switchAuth()">Register (1,000 coins)</button>
+      </div>
+      <p id="authErr" class="err"></p>
+    </div>
+
+    <!-- CoinFlip & Support -->
+    <div id="gameSection" class="hidden">
+      <div class="card">
+        <h2>Coin Flip</h2>
+        <div class="row" style="margin-bottom: 10px;">
+          <button id="headsBtn" onclick="pickSide('heads')">Heads (2x)</button>
+          <button id="tailsBtn" class="alt" onclick="pickSide('tails')">Tails (2x)</button>
+        </div>
+        <input id="betInput" type="number" min="1" value="100" placeholder="Bet coins" />
+        <button id="flipBtn" onclick="doFlip()">Flip Coin</button>
+        <p id="flipResult" style="font-weight: 700; min-height: 24px;"></p>
+      </div>
+
+      <div class="card">
+        <h3>Discord Support</h3>
+        <textarea id="supportInput" rows="2" placeholder="Describe your issue..."></textarea>
+        <button class="dc" onclick="sendSupport()">Send to Discord</button>
+        <span id="supportStatus" class="ok" style="margin-left: 10px;"></span>
+      </div>
+    </div>
+
+    <!-- Admin Panel -->
+    <div id="adminSection" class="hidden">
+      <div class="card">
+        <h2>Admin Settings</h2>
+        <label style="display: flex; align-items: center; gap: 8px; margin-bottom: 10px;">
+          <input id="maintCheck" type="checkbox" style="width: auto; margin: 0;" />
+          <span>Maintenance Mode</span>
+        </label>
+        <input id="maintMsgInput" type="text" placeholder="Maintenance message" />
+        <input id="dcInviteInput" type="text" placeholder="Discord invite link (https://discord.gg/...)" />
+        <input id="dcWebhookInput" type="text" placeholder="Discord webhook URL" />
+        <button onclick="saveSettings()">Save Settings</button>
+        <span id="saveStatus" class="ok" style="margin-left: 10px;"></span>
+      </div>
+
+      <div class="card">
+        <h3>Players</h3>
+        <table>
+          <thead>
+            <tr><th>Username</th><th>Coins</th><th>Role</th><th>Actions</th></tr>
+          </thead>
+          <tbody id="usersTable"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    let token = localStorage.getItem('cf_token');
+    let isRegister = false;
+    let chosenSide = 'heads';
+    let adminOpen = false;
+
+    async function init() {
+      try {
+        const statusRes = await fetch('/api/status');
+        const status = await statusRes.json();
+        document.getElementById('dcLink').href = status.discordInvite || '#';
+
+        if (token) {
+          const meRes = await fetch('/api/me', { headers: { Authorization: token } });
+          if (meRes.ok) {
+            enterApp(await meRes.json());
+            return;
+          }
+          if (meRes.status === 503) {
+            showMaintenance(status.maintenanceMessage);
+            return;
+          }
+          localStorage.removeItem('cf_token');
+          token = null;
+        }
+
+        if (status.maintenance) showMaintenance(status.maintenanceMessage);
+        else showAuth();
+      } catch (e) {
+        showAuth();
+      }
+    }
+
+    function showMaintenance(msg) {
+      document.getElementById('maintMsg').textContent = msg || 'Under maintenance.';
+      document.getElementById('maintCard').classList.remove('hidden');
+      document.getElementById('authCard').classList.add('hidden');
+      document.getElementById('gameSection').classList.add('hidden');
+    }
+
+    function showAuth() {
+      document.getElementById('maintCard').classList.add('hidden');
+      document.getElementById('authCard').classList.remove('hidden');
+    }
+
+    function switchAuth() {
+      isRegister = !isRegister;
+      document.getElementById('authTitle').textContent = isRegister ? 'Register' : 'Login';
+      document.getElementById('authSubmit').textContent = isRegister ? 'Create Account' : 'Login';
+      document.getElementById('authSwitch').textContent = isRegister ? 'Back to Login' : 'Register (1,000 coins)';
+      document.getElementById('authErr').textContent = '';
+    }
+
+    async function submitAuth() {
+      const username = document.getElementById('userInput').value;
+      const password = document.getElementById('passInput').value;
+      const res = await fetch(isRegister ? '/api/register' : '/api/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username, password })
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        document.getElementById('authErr').textContent = data.error || 'Authentication failed.';
+        return;
+      }
+      token = data.token;
+      localStorage.setItem('cf_token', token);
+      enterApp(data);
+    }
+
+    function enterApp(user) {
+      document.getElementById('maintCard').classList.add('hidden');
+      document.getElementById('authCard').classList.add('hidden');
+      document.getElementById('gameSection').classList.remove('hidden');
+      document.getElementById('coinBadge').classList.remove('hidden');
+      document.getElementById('logoutBtn').classList.remove('hidden');
+      setCoins(user.coins);
+      if (user.isAdmin) document.getElementById('adminBtn').classList.remove('hidden');
+    }
+
+    function setCoins(amount) {
+      document.getElementById('coinBadge').textContent = `${Number(amount).toLocaleString()} coins`;
+    }
+
+    function pickSide(side) {
+      chosenSide = side;
+      document.getElementById('headsBtn').className = side === 'heads' ? '' : 'alt';
+      document.getElementById('tailsBtn').className = side === 'tails' ? '' : 'alt';
+    }
+
+    async function doFlip() {
+      const bet = Number(document.getElementById('betInput').value);
+      const flipBtn = document.getElementById('flipBtn');
+      flipBtn.disabled = true;
+      try {
+        const res = await fetch('/api/flip', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: token },
+          body: JSON.stringify({ bet, choice: chosenSide })
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          document.getElementById('flipResult').textContent = data.error || 'Flip failed.';
+          document.getElementById('flipResult').className = 'err';
+          return;
+        }
+        setCoins(data.coins);
+        document.getElementById('flipResult').textContent = data.won
+          ? `Landed on ${data.outcome.toUpperCase()} — You won ${bet} coins!`
+          : `Landed on ${data.outcome.toUpperCase()} — You lost ${bet} coins.`;
+        document.getElementById('flipResult').className = data.won ? 'ok' : 'err';
+      } finally {
+        flipBtn.disabled = false;
+      }
+    }
+
+    async function sendSupport() {
+      const message = document.getElementById('supportInput').value;
+      const res = await fetch('/api/support', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: token },
+        body: JSON.stringify({ message })
+      });
+      const data = await res.json();
+      if (res.ok) {
+        document.getElementById('supportInput').value = '';
+        document.getElementById('supportStatus').textContent = 'Sent to Discord!';
+      } else {
+        document.getElementById('supportStatus').textContent = data.error || 'Failed to send.';
+      }
+    }
+
+    async function toggleAdmin() {
+      adminOpen = !adminOpen;
+      document.getElementById('adminSection').classList.toggle('hidden', !adminOpen);
+      document.getElementById('gameSection').classList.toggle('hidden', adminOpen);
+      document.getElementById('adminBtn').textContent = adminOpen ? 'Back to Game' : 'Admin Panel';
+      if (adminOpen) loadAdmin();
+    }
+
+    async function loadAdmin() {
+      const res = await fetch('/api/admin/data', { headers: { Authorization: token } });
+      if (!res.ok) return;
+      const d = await res.json();
+      document.getElementById('maintCheck').checked = Boolean(d.maintenance);
+      document.getElementById('maintMsgInput').value = d.maintenanceMessage || '';
+      document.getElementById('dcInviteInput').value = d.discordInvite || '';
+      document.getElementById('dcWebhookInput').value = d.discordWebhook || '';
+
+      document.getElementById('usersTable').innerHTML = d.users.map(u => `
+        <tr>
+          <td>${u.username}</td>
+          <td><input id="coins_${u.username}" type="number" value="${u.coins}" style="width:110px;margin:0;" /></td>
+          <td>${u.isAdmin ? 'Admin' : 'Player'}</td>
+          <td>
+            <button onclick="updateUser('${u.username}', ${u.isAdmin})">Save Coins</button>
+            <button class="alt" onclick="updateUser('${u.username}', ${!u.isAdmin})">
+              ${u.isAdmin ? 'Remove Admin' : 'Make Admin'}
+            </button>
+          </td>
+        </tr>
+      `).join('');
+    }
+
+    async function saveSettings() {
+      await fetch('/api/admin/settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: token },
+        body: JSON.stringify({
+          maintenance: document.getElementById('maintCheck').checked,
+          maintenanceMessage: document.getElementById('maintMsgInput').value,
+          discordInvite: document.getElementById('dcInviteInput').value,
+          discordWebhook: document.getElementById('dcWebhookInput').value
+        })
+      });
+      document.getElementById('saveStatus').textContent = 'Settings saved.';
+    }
+
+    async function updateUser(targetUser, isAdmin) {
+      const coins = Number(document.getElementById(`coins_${targetUser}`).value);
+      await fetch('/api/admin/user', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: token },
+        body: JSON.stringify({ targetUser, coins, isAdmin })
+      });
+      loadAdmin();
+    }
+
+    function logout() {
+      localStorage.removeItem('cf_token');
+      location.reload();
+    }
+
+    init();
+  </script>
+</body>
+</html>
