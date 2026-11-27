@@ -9,11 +9,11 @@
     body { margin: 0; background: #0f172a; color: #f8fafc; min-height: 100vh; }
     header {
       display: flex; justify-content: space-between; align-items: center;
-      padding: 14px 22px; background: #1e293b; border-bottom: 1px solid #334155;
+      padding: 14px 22px; background: #1e293b; border-bottom: 1px solid #334155; flex-wrap: wrap; gap: 10px;
     }
     .brand { font-size: 1.2rem; font-weight: 800; color: #fbbf24; }
     .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
-    .wrap { max-width: 840px; margin: 28px auto; padding: 0 16px; }
+    .wrap { max-width: 880px; margin: 28px auto; padding: 0 16px; }
     .card {
       background: #1e293b; border: 1px solid #334155; border-radius: 12px;
       padding: 20px; margin-bottom: 18px;
@@ -28,6 +28,7 @@
     }
     button:disabled { opacity: 0.5; cursor: not-allowed; }
     .alt { background: #334155; color: #f8fafc; }
+    .danger { background: #ef4444; color: #fff; }
     .dc {
       background: #5865F2; color: #fff; text-decoration: none;
       padding: 10px 15px; border-radius: 8px; font-weight: 600; display: inline-block;
@@ -36,6 +37,12 @@
     .hidden { display: none !important; }
     .err { color: #f87171; }
     .ok { color: #4ade80; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 14px; }
+    .item-card {
+      background: #0f172a; border: 1px solid #334155; border-radius: 10px;
+      padding: 14px; display: flex; flex-direction: column; justify-content: space-between;
+    }
+    .price-tag { color: #fbbf24; font-weight: 700; margin: 6px 0; }
     table { width: 100%; border-collapse: collapse; margin-top: 10px; }
     th, td { text-align: left; padding: 9px; border-bottom: 1px solid #334155; }
   </style>
@@ -46,7 +53,9 @@
     <div class="row">
       <a id="dcLink" class="dc" href="#" target="_blank" rel="noopener">Discord</a>
       <span id="coinBadge" class="badge hidden">0 coins</span>
-      <button id="adminBtn" class="alt hidden" onclick="toggleAdmin()">Admin Panel</button>
+      <button id="gameTabBtn" class="hidden" onclick="switchTab('game')">Flip</button>
+      <button id="shopTabBtn" class="alt hidden" onclick="switchTab('shop')">Shop</button>
+      <button id="adminTabBtn" class="alt hidden" onclick="switchTab('admin')">Admin</button>
       <button id="logoutBtn" class="alt hidden" onclick="logout()">Logout</button>
     </div>
   </header>
@@ -86,9 +95,23 @@
 
       <div class="card">
         <h3>Discord Support</h3>
-        <textarea id="supportInput" rows="2" placeholder="Describe your issue..."></textarea>
+        <textarea id="supportInput" rows="2" placeholder="Describe your issue or claim a purchased item..."></textarea>
         <button class="dc" onclick="sendSupport()">Send to Discord</button>
         <span id="supportStatus" class="ok" style="margin-left: 10px;"></span>
+      </div>
+    </div>
+
+    <!-- Shop & Inventory -->
+    <div id="shopSection" class="hidden">
+      <div class="card">
+        <h2>Coin Shop</h2>
+        <p id="shopMsg" style="font-weight: 600;"></p>
+        <div id="shopGrid" class="grid"></div>
+      </div>
+
+      <div class="card">
+        <h3>My Purchased Items</h3>
+        <div id="inventoryList" style="color: #cbd5e1;">No items bought yet.</div>
       </div>
     </div>
 
@@ -108,10 +131,28 @@
       </div>
 
       <div class="card">
+        <h2>Add Shop Item</h2>
+        <input id="itemNameInput" type="text" placeholder="Item Name (e.g., VIP Rank, Custom Tag)" />
+        <input id="itemPriceInput" type="number" min="1" placeholder="Price in Coins (e.g., 500)" />
+        <input id="itemDescInput" type="text" placeholder="Item Description" />
+        <input id="itemStockInput" type="number" min="-1" placeholder="Stock (leave empty for unlimited)" />
+        <button onclick="addShopItem()">Add Item to Shop</button>
+        <span id="itemStatus" class="ok" style="margin-left: 10px;"></span>
+
+        <h3 style="margin-top: 20px;">Current Shop Items</h3>
+        <table>
+          <thead>
+            <tr><th>Item</th><th>Price</th><th>Stock</th><th>Action</th></tr>
+          </thead>
+          <tbody id="adminItemsTable"></tbody>
+        </table>
+      </div>
+
+      <div class="card">
         <h3>Players</h3>
         <table>
           <thead>
-            <tr><th>Username</th><th>Coins</th><th>Role</th><th>Actions</th></tr>
+            <tr><th>Username</th><th>Coins</th><th>Items</th><th>Role</th><th>Actions</th></tr>
           </thead>
           <tbody id="usersTable"></tbody>
         </table>
@@ -123,7 +164,7 @@
     let token = localStorage.getItem('cf_token');
     let isRegister = false;
     let chosenSide = 'heads';
-    let adminOpen = false;
+    let isAdminUser = false;
 
     async function init() {
       try {
@@ -157,6 +198,8 @@
       document.getElementById('maintCard').classList.remove('hidden');
       document.getElementById('authCard').classList.add('hidden');
       document.getElementById('gameSection').classList.add('hidden');
+      document.getElementById('shopSection').classList.add('hidden');
+      document.getElementById('adminSection').classList.add('hidden');
     }
 
     function showAuth() {
@@ -191,13 +234,33 @@
     }
 
     function enterApp(user) {
+      isAdminUser = Boolean(user.isAdmin);
       document.getElementById('maintCard').classList.add('hidden');
       document.getElementById('authCard').classList.add('hidden');
-      document.getElementById('gameSection').classList.remove('hidden');
       document.getElementById('coinBadge').classList.remove('hidden');
+      document.getElementById('gameTabBtn').classList.remove('hidden');
+      document.getElementById('shopTabBtn').classList.remove('hidden');
       document.getElementById('logoutBtn').classList.remove('hidden');
+      if (isAdminUser) document.getElementById('adminTabBtn').classList.remove('hidden');
+
       setCoins(user.coins);
-      if (user.isAdmin) document.getElementById('adminBtn').classList.remove('hidden');
+      renderInventory(user.inventory || []);
+      switchTab('game');
+    }
+
+    function switchTab(tab) {
+      document.getElementById('gameSection').classList.toggle('hidden', tab !== 'game');
+      document.getElementById('shopSection').classList.toggle('hidden', tab !== 'shop');
+      document.getElementById('adminSection').classList.toggle('hidden', tab !== 'admin');
+
+      document.getElementById('gameTabBtn').className = tab === 'game' ? '' : 'alt';
+      document.getElementById('shopTabBtn').className = tab === 'shop' ? '' : 'alt';
+      if (isAdminUser) {
+        document.getElementById('adminTabBtn').className = tab === 'admin' ? '' : 'alt';
+      }
+
+      if (tab === 'shop') loadShop();
+      if (tab === 'admin') loadAdmin();
     }
 
     function setCoins(amount) {
@@ -236,6 +299,75 @@
       }
     }
 
+    // --- SHOP FUNCTIONS ---
+    async function loadShop() {
+      const res = await fetch('/api/shop', { headers: { Authorization: token } });
+      if (!res.ok) return;
+      const data = await res.json();
+      renderShopItems(data.items || []);
+      renderInventory(data.inventory || []);
+    }
+
+    function renderShopItems(items) {
+      const grid = document.getElementById('shopGrid');
+      if (!items.length) {
+        grid.innerHTML = '<p style="color:#94a3b8;">No items in the shop right now.</p>';
+        return;
+      }
+      grid.innerHTML = items.map(item => {
+        const outOfStock = item.stock === 0;
+        const stockText = item.stock < 0 ? 'Unlimited' : `${item.stock} left`;
+        return `
+          <div class="item-card">
+            <div>
+              <strong>${item.name}</strong>
+              <div class="price-tag">${Number(item.price).toLocaleString()} coins</div>
+              <p style="font-size:0.9rem;color:#cbd5e1;margin:4px 0 10px;">${item.description}</p>
+            </div>
+            <div>
+              <div style="font-size:0.8rem;color:#94a3b8;margin-bottom:8px;">Stock: ${stockText}</div>
+              <button style="width:100%;" ${outOfStock ? 'disabled' : ''} onclick="buyItem('${item.id}')">
+                ${outOfStock ? 'Out of Stock' : 'Buy Item'}
+              </button>
+            </div>
+          </div>
+        `;
+      }).join('');
+    }
+
+    function renderInventory(inv) {
+      const el = document.getElementById('inventoryList');
+      if (!inv.length) {
+        el.innerHTML = '<p style="color:#94a3b8;">No items bought yet.</p>';
+        return;
+      }
+      el.innerHTML = inv.map(i => `
+        <div style="padding:8px 0;border-bottom:1px solid #334155;">
+          <strong>${i.name}</strong> — bought for ${Number(i.price).toLocaleString()} coins
+        </div>
+      `).join('');
+    }
+
+    async function buyItem(itemId) {
+      const msgEl = document.getElementById('shopMsg');
+      const res = await fetch('/api/shop/buy', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: token },
+        body: JSON.stringify({ itemId })
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        msgEl.textContent = data.error || 'Could not buy item.';
+        msgEl.className = 'err';
+        return;
+      }
+      setCoins(data.coins);
+      renderShopItems(data.items);
+      renderInventory(data.inventory);
+      msgEl.textContent = 'Purchase successful!';
+      msgEl.className = 'ok';
+    }
+
     async function sendSupport() {
       const message = document.getElementById('supportInput').value;
       const res = await fetch('/api/support', {
@@ -252,14 +384,7 @@
       }
     }
 
-    async function toggleAdmin() {
-      adminOpen = !adminOpen;
-      document.getElementById('adminSection').classList.toggle('hidden', !adminOpen);
-      document.getElementById('gameSection').classList.toggle('hidden', adminOpen);
-      document.getElementById('adminBtn').textContent = adminOpen ? 'Back to Game' : 'Admin Panel';
-      if (adminOpen) loadAdmin();
-    }
-
+    // --- ADMIN FUNCTIONS ---
     async function loadAdmin() {
       const res = await fetch('/api/admin/data', { headers: { Authorization: token } });
       if (!res.ok) return;
@@ -269,10 +394,20 @@
       document.getElementById('dcInviteInput').value = d.discordInvite || '';
       document.getElementById('dcWebhookInput').value = d.discordWebhook || '';
 
+      document.getElementById('adminItemsTable').innerHTML = (d.items || []).map(i => `
+        <tr>
+          <td>${i.name}</td>
+          <td>${Number(i.price).toLocaleString()}</td>
+          <td>${i.stock < 0 ? 'Unlimited' : i.stock}</td>
+          <td><button class="danger" onclick="deleteShopItem('${i.id}')">Delete</button></td>
+        </tr>
+      `).join('');
+
       document.getElementById('usersTable').innerHTML = d.users.map(u => `
         <tr>
           <td>${u.username}</td>
-          <td><input id="coins_${u.username}" type="number" value="${u.coins}" style="width:110px;margin:0;" /></td>
+          <td><input id="coins_${u.username}" type="number" value="${u.coins}" style="width:100px;margin:0;" /></td>
+          <td>${u.itemCount}</td>
           <td>${u.isAdmin ? 'Admin' : 'Player'}</td>
           <td>
             <button onclick="updateUser('${u.username}', ${u.isAdmin})">Save Coins</button>
@@ -282,6 +417,41 @@
           </td>
         </tr>
       `).join('');
+    }
+
+    async function addShopItem() {
+      const name = document.getElementById('itemNameInput').value;
+      const price = document.getElementById('itemPriceInput').value;
+      const description = document.getElementById('itemDescInput').value;
+      const stock = document.getElementById('itemStockInput').value;
+
+      const res = await fetch('/api/admin/items', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: token },
+        body: JSON.stringify({ name, price, description, stock })
+      });
+      const data = await res.json();
+      const statusEl = document.getElementById('itemStatus');
+      if (!res.ok) {
+        statusEl.textContent = data.error || 'Error adding item.';
+        statusEl.className = 'err';
+        return;
+      }
+      document.getElementById('itemNameInput').value = '';
+      document.getElementById('itemPriceInput').value = '';
+      document.getElementById('itemDescInput').value = '';
+      document.getElementById('itemStockInput').value = '';
+      statusEl.textContent = 'Item added!';
+      statusEl.className = 'ok';
+      loadAdmin();
+    }
+
+    async function deleteShopItem(id) {
+      await fetch(`/api/admin/items/${id}`, {
+        method: 'DELETE',
+        headers: { Authorization: token }
+      });
+      loadAdmin();
     }
 
     async function saveSettings() {
