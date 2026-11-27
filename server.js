@@ -4,32 +4,39 @@ const path = require('path');
 const crypto = require('crypto');
 
 const app = express();
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 10000;
 const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, 'data');
 
-if (!fs.existsSync(DATA_DIR)) {
-  fs.mkdirSync(DATA_DIR, { recursive: true });
-}
-
+fs.mkdirSync(DATA_DIR, { recursive: true });
 const DATA_FILE = path.join(DATA_DIR, 'data.json');
 
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
-// Default database state
 let db = {
   maintenance: false,
-  maintenanceMessage: "We are upgrading our servers. Back shortly!",
-  discordInvite: "https://discord.gg/your-invite",
-  discordWebhook: "",
-  users: {} // username -> { passwordHash, coins, isAdmin, token }
+  maintenanceMessage: 'Under maintenance. Back soon.',
+  discordInvite: 'https://discord.gg/your-invite',
+  discordWebhook: '',
+  items: [
+    {
+      id: 'vip_role',
+      name: 'VIP Discord Role',
+      price: 2500,
+      description: 'Claim a VIP role in our Discord server! Open a support ticket after buying.',
+      stock: -1 // -1 means unlimited
+    }
+  ],
+  users: {}
 };
 
 if (fs.existsSync(DATA_FILE)) {
   try {
-    db = JSON.parse(fs.readFileSync(DATA_FILE, 'utf8'));
-  } catch (e) {
-    console.error("Failed to read data.json, starting fresh.");
+    const loaded = JSON.parse(fs.readFileSync(DATA_FILE, 'utf8'));
+    db = { ...db, ...loaded };
+    if (!Array.isArray(db.items)) db.items = [];
+  } catch (err) {
+    console.error('Could not parse data.json, using default state:', err.message);
   }
 }
 
@@ -41,7 +48,7 @@ function hashPassword(pw) {
   return crypto.createHash('sha256').update(pw).digest('hex');
 }
 
-async function sendDiscordLog(title, description, color = 5814783) {
+async function notifyDiscord(title, description, color = 5814783) {
   if (!db.discordWebhook) return;
   try {
     await fetch(db.discordWebhook, {
@@ -52,24 +59,27 @@ async function sendDiscordLog(title, description, color = 5814783) {
       })
     });
   } catch (err) {
-    console.error("Discord webhook error:", err.message);
+    console.error('Discord webhook failed:', err.message);
   }
 }
 
-// Auth Middleware
 function auth(req, res, next) {
   const token = req.headers['authorization'];
-  const user = Object.entries(db.users).find(([, u]) => u.token === token);
-  if (!user) return res.status(401).json({ error: "Unauthorized" });
-  req.username = user[0];
-  req.user = user[1];
+  const found = Object.entries(db.users).find(([, u]) => u.token === token);
+  if (!found) return res.status(401).json({ error: 'Unauthorized' });
+  req.username = found[0];
+  req.user = found[1];
+  if (!Array.isArray(req.user.inventory)) req.user.inventory = [];
   next();
 }
 
-// Health check route for Render
+function adminOnly(req, res, next) {
+  if (!req.user.isAdmin) return res.status(403).json({ error: 'Admin only' });
+  next();
+}
+
 app.get('/health', (req, res) => res.status(200).send('OK'));
 
-// Public status endpoint
 app.get('/api/status', (req, res) => {
   res.json({
     maintenance: db.maintenance,
@@ -78,18 +88,16 @@ app.get('/api/status', (req, res) => {
   });
 });
 
-// Register
 app.post('/api/register', async (req, res) => {
   const { username, password } = req.body;
-  if (!username || !password || username.length < 3 || password.length < 4) {
-    return res.status(400).json({ error: "Username (min 3) and password (min 4) required." });
+  const cleanUser = (username || '').trim().toLowerCase();
+  if (cleanUser.length < 3 || !password || password.length < 4) {
+    return res.status(400).json({ error: 'Username (3+ chars) and password (4+ chars) required.' });
   }
-  const cleanUser = username.trim().toLowerCase();
   if (db.users[cleanUser]) {
-    return res.status(400).json({ error: "Username already exists." });
+    return res.status(400).json({ error: 'Username already taken.' });
   }
 
-  // First registered user automatically becomes Admin
   const isFirstUser = Object.keys(db.users).length === 0;
   const token = crypto.randomBytes(24).toString('hex');
 
@@ -97,149 +105,209 @@ app.post('/api/register', async (req, res) => {
     passwordHash: hashPassword(password),
     coins: 1000,
     isAdmin: isFirstUser,
+    inventory: [],
     token
   };
   saveDB();
 
-  await sendDiscordLog("New User Registered", `**${cleanUser}** joined the site!`, 3066993);
-
+  await notifyDiscord('New Player Registered', `**${cleanUser}** joined with 1,000 coins.`, 3066993);
   res.json({
     token,
     username: cleanUser,
     coins: 1000,
-    isAdmin: isFirstUser
+    isAdmin: isFirstUser,
+    inventory: []
   });
 });
 
-// Login
 app.post('/api/login', (req, res) => {
-  const { username, password } = req.body;
-  const cleanUser = (username || "").trim().toLowerCase();
+  const cleanUser = (req.body.username || '').trim().toLowerCase();
   const user = db.users[cleanUser];
-
-  if (!user || user.passwordHash !== hashPassword(password || "")) {
-    return res.status(401).json({ error: "Invalid username or password." });
+  if (!user || user.passwordHash !== hashPassword(req.body.password || '')) {
+    return res.status(401).json({ error: 'Invalid credentials.' });
   }
-
   if (db.maintenance && !user.isAdmin) {
-    return res.status(503).json({ error: "Site is currently in Maintenance Mode." });
+    return res.status(503).json({ error: db.maintenanceMessage, maintenance: true });
   }
+  if (!Array.isArray(user.inventory)) user.inventory = [];
 
   user.token = crypto.randomBytes(24).toString('hex');
   saveDB();
-
   res.json({
     token: user.token,
     username: cleanUser,
     coins: user.coins,
-    isAdmin: user.isAdmin
+    isAdmin: user.isAdmin,
+    inventory: user.inventory
   });
 });
 
-// Get current profile
 app.get('/api/me', auth, (req, res) => {
   if (db.maintenance && !req.user.isAdmin) {
-    return res.status(503).json({ error: "Maintenance Mode active", maintenance: true });
+    return res.status(503).json({ error: db.maintenanceMessage, maintenance: true });
   }
   res.json({
     username: req.username,
     coins: req.user.coins,
-    isAdmin: req.user.isAdmin
+    isAdmin: req.user.isAdmin,
+    inventory: req.user.inventory
   });
 });
 
-// Flip Coin
 app.post('/api/flip', auth, async (req, res) => {
   if (db.maintenance && !req.user.isAdmin) {
-    return res.status(503).json({ error: "Site is under maintenance." });
+    return res.status(503).json({ error: db.maintenanceMessage, maintenance: true });
   }
 
   const bet = Math.floor(Number(req.body.bet));
   const choice = req.body.choice;
-
   if (!['heads', 'tails'].includes(choice)) {
-    return res.status(400).json({ error: "Choose heads or tails." });
+    return res.status(400).json({ error: 'Choice must be heads or tails.' });
   }
-  if (!bet || bet <= 0 || bet > req.user.coins) {
-    return res.status(400).json({ error: "Invalid bet amount." });
+  if (!bet || bet < 1 || bet > req.user.coins) {
+    return res.status(400).json({ error: 'Invalid bet amount.' });
   }
 
   const outcome = Math.random() < 0.5 ? 'heads' : 'tails';
   const won = outcome === choice;
+  req.user.coins += won ? bet : -bet;
+  saveDB();
 
-  if (won) {
-    req.user.coins += bet;
-    if (bet >= 500) {
-      sendDiscordLog("Big Coin Flip Win!", `**${req.username}** bet **${bet}** on ${choice.toUpperCase()} and won!`, 15844367);
-    }
-  } else {
-    req.user.coins -= bet;
+  if (won && bet >= 500) {
+    await notifyDiscord('Big Flip Win', `**${req.username}** won **${bet}** coins on ${choice}.`, 15844367);
   }
 
-  saveDB();
   res.json({ outcome, won, coins: req.user.coins });
 });
 
-// Discord Support Ticket
-app.post('/api/support', auth, async (req, res) => {
-  const { message } = req.body;
-  if (!message || message.trim().length < 5) {
-    return res.status(400).json({ error: "Please enter a detailed support message." });
+// --- SHOP ROUTES ---
+app.get('/api/shop', auth, (req, res) => {
+  if (db.maintenance && !req.user.isAdmin) {
+    return res.status(503).json({ error: db.maintenanceMessage, maintenance: true });
   }
-  await sendDiscordLog(
-    `Support Ticket from ${req.username}`,
-    `${message}\n\n**Balance:** ${req.user.coins} coins`,
+  res.json({ items: db.items, inventory: req.user.inventory });
+});
+
+app.post('/api/shop/buy', auth, async (req, res) => {
+  if (db.maintenance && !req.user.isAdmin) {
+    return res.status(503).json({ error: db.maintenanceMessage, maintenance: true });
+  }
+
+  const item = db.items.find(i => i.id === req.body.itemId);
+  if (!item) return res.status(404).json({ error: 'Item not found.' });
+  if (item.stock === 0) return res.status(400).json({ error: 'Item is out of stock.' });
+  if (req.user.coins < item.price) {
+    return res.status(400).json({ error: 'Not enough coins.' });
+  }
+
+  req.user.coins -= item.price;
+  if (item.stock > 0) item.stock -= 1;
+
+  req.user.inventory.push({
+    id: item.id,
+    name: item.name,
+    price: item.price,
+    boughtAt: new Date().toISOString()
+  });
+
+  saveDB();
+
+  await notifyDiscord(
+    'Shop Purchase',
+    `**${req.username}** bought **${item.name}** for **${item.price}** coins!`,
+    10181046
+  );
+
+  res.json({
+    coins: req.user.coins,
+    inventory: req.user.inventory,
+    items: db.items
+  });
+});
+
+app.post('/api/support', auth, async (req, res) => {
+  const message = (req.body.message || '').trim();
+  if (message.length < 4) {
+    return res.status(400).json({ error: 'Please write a longer message.' });
+  }
+  await notifyDiscord(
+    `Support Request: ${req.username}`,
+    `${message}\n\nCoins: ${req.user.coins}`,
     15158332
   );
-  res.json({ success: true });
+  res.json({ ok: true });
 });
 
 // --- ADMIN ROUTES ---
-function adminOnly(req, res, next) {
-  if (!req.user.isAdmin) return res.status(403).json({ error: "Admin access required." });
-  next();
-}
-
 app.get('/api/admin/data', auth, adminOnly, (req, res) => {
-  const userList = Object.entries(db.users).map(([name, u]) => ({
-    username: name,
+  const users = Object.entries(db.users).map(([username, u]) => ({
+    username,
     coins: u.coins,
-    isAdmin: u.isAdmin
+    isAdmin: u.isAdmin,
+    itemCount: Array.isArray(u.inventory) ? u.inventory.length : 0
   }));
   res.json({
     maintenance: db.maintenance,
     maintenanceMessage: db.maintenanceMessage,
     discordInvite: db.discordInvite,
     discordWebhook: db.discordWebhook,
-    users: userList
+    items: db.items,
+    users
   });
 });
 
 app.post('/api/admin/settings', auth, adminOnly, (req, res) => {
-  const { maintenance, maintenanceMessage, discordInvite, discordWebhook } = req.body;
-  if (typeof maintenance === 'boolean') db.maintenance = maintenance;
-  if (typeof maintenanceMessage === 'string') db.maintenanceMessage = maintenanceMessage;
-  if (typeof discordInvite === 'string') db.discordInvite = discordInvite;
-  if (typeof discordWebhook === 'string') db.discordWebhook = discordWebhook;
+  if (typeof req.body.maintenance === 'boolean') db.maintenance = req.body.maintenance;
+  if (typeof req.body.maintenanceMessage === 'string') db.maintenanceMessage = req.body.maintenanceMessage;
+  if (typeof req.body.discordInvite === 'string') db.discordInvite = req.body.discordInvite;
+  if (typeof req.body.discordWebhook === 'string') db.discordWebhook = req.body.discordWebhook;
   saveDB();
-  res.json({ success: true });
+  res.json({ ok: true });
+});
+
+app.post('/api/admin/items', auth, adminOnly, (req, res) => {
+  const name = (req.body.name || '').trim();
+  const description = (req.body.description || '').trim();
+  const price = Math.floor(Number(req.body.price));
+  const stockRaw = req.body.stock;
+  const stock = stockRaw === '' || stockRaw === undefined || Number(stockRaw) < 0
+    ? -1
+    : Math.floor(Number(stockRaw));
+
+  if (!name || Number.isNaN(price) || price < 1) {
+    return res.status(400).json({ error: 'Valid item name and price (1+) required.' });
+  }
+
+  db.items.push({
+    id: crypto.randomBytes(6).toString('hex'),
+    name,
+    price,
+    description: description || 'Shop item',
+    stock
+  });
+  saveDB();
+  res.json({ ok: true, items: db.items });
+});
+
+app.delete('/api/admin/items/:id', auth, adminOnly, (req, res) => {
+  db.items = db.items.filter(i => i.id !== req.params.id);
+  saveDB();
+  res.json({ ok: true, items: db.items });
 });
 
 app.post('/api/admin/user', auth, adminOnly, (req, res) => {
-  const { targetUser, coins, isAdmin } = req.body;
-  const user = db.users[targetUser];
-  if (!user) return res.status(404).json({ error: "User not found." });
-
-  if (coins !== undefined && !isNaN(Number(coins))) {
-    user.coins = Math.max(0, Math.floor(Number(coins)));
+  const user = db.users[req.body.targetUser];
+  if (!user) return res.status(404).json({ error: 'User not found.' });
+  if (req.body.coins !== undefined && !Number.isNaN(Number(req.body.coins))) {
+    user.coins = Math.max(0, Math.floor(Number(req.body.coins)));
   }
-  if (typeof isAdmin === 'boolean') {
-    user.isAdmin = isAdmin;
+  if (typeof req.body.isAdmin === 'boolean') {
+    user.isAdmin = req.body.isAdmin;
   }
   saveDB();
-  res.json({ success: true });
+  res.json({ ok: true });
 });
 
 app.listen(PORT, '0.0.0.0', () => {
-  console.log(`CoinFlip server running on port ${PORT}`);
+  console.log(`Server listening on 0.0.0.0:${PORT}`);
 });
