@@ -1,0 +1,15 @@
+{
+  "name": "coinflip-arena",
+  "version": "1.0.0",
+  "description": "CoinFlip web game with coins, admin panel, maintenance mode, and Discord support",
+  "main": "server.js",
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2"
+  }
+}
