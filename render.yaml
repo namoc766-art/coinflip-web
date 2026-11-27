@@ -1,12 +1,12 @@
 services:
   - type: web
     name: coinflip-arena
-    runtime: node
+    runtime: docker
     plan: free
-    buildCommand: npm install
-    startCommand: npm start
     envVars:
       - key: NODE_ENV
         value: production
+      - key: PORT
+        value: "10000"
       - key: DATA_DIR
-        value: ./data
+        value: /usr/src/app/data
